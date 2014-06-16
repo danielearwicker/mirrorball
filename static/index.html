@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Mirrorball</title>
+        <script src="lib/jquery-2.1.1.min.js"></script>
+        <script src="lib/knockout-3.1.0.debug.js"></script>
+        <script src="index.js"></script>
+        <style>
+        body, td, td {
+            font-family: Helvetica, Arial;
+            font-size: 10pt;
+        }
+        .settings, .log {
+            overflow: auto;
+            position: absolute;
+        }
+        .settings {
+            left: 0;
+            top: 0;
+            right: 0;
+            height: 24px;
+            padding: 1px 5px;
+        }
+        .log {
+            left: 5px;
+            top: 24px;
+            right: 5px;
+            bottom: 5px;
+        }
+        .log table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        .log td, .log th {
+            border: 1px solid silver;
+            white-space: nowrap;
+        }
+        .log tr.error {
+            background: #FEE;
+            font-weight: bold;
+            color: #900;
+        }
+        .log tr.trace {
+            font-weight: italic;
+            color: gray;
+        }
+        .log tr.deletable {
+            background: #DDD;
+            font-weight: bold;
+        }
+        .progress {
+            position: relative; 
+            overflow: hidden;
+        }
+        .progress .bar {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            background: #BDF;
+        }
+        .progress .text {
+            padding: 2px;
+            white-space: nowrap;
+        }
+        .scheduleNumber {
+            width: 30px;
+        }
+        </style>
+    </head>
+    <body>
+        <div class="settings">
+            <button data-bind="enable: canDelete, click: deleteSelected">Delete selected</button>&nbsp;&nbsp; 
+            <button data-bind="click: compareNow, enable: mode() === 'idle'">Compare now</button>&nbsp;&nbsp;               
+            <span data-bind="text: mode"></span>
+        </div>
+        <div class="log">
+            <table>
+                <tbody data-bind="foreach: downloadingSummary">
+                    <tr class="download">
+                        <td data-bind="text: time"></td>                    
+                        <td>download</td>
+                        <td class="progress">
+                            <div class="bar" data-bind="style: { width: percent }">
+                            <div class="text" data-bind="text: info"></div>
+                        </td>
+                        <td data-bind="text: path"></td>
+                    </tr>
+                </tbody>
+                <tbody data-bind="foreach: deletable">
+                    <tr class="deletable">
+                        <td data-bind="text: time"></td>                    
+                        <td>deletable</td>
+                        <td><input type="checkbox" data-bind="checked: selected"></td>
+                        <td data-bind="text: path"></td>
+                    </tr>
+                </tbody>            
+                <tbody data-bind="foreach: logged">
+                    <tr data-bind="attr: { 'class': kind }">
+                        <td data-bind="text: time"></td>
+                        <td data-bind="text: kind"></td>
+                        <td data-bind="text: message"></td>
+                        <td data-bind="text: info"></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </body>
+</html>
