@@ -1,36 +1,9 @@
 {
     "default": {
         "port": 8888,
-        "media": "/Volumes/G-RAID",
+        "media": "wingwang",
         "peer": {
-            "host": "studio",
-            "port": 8888,
-            "hour": 2,
-            "minute": 0,
-            "second": 0
-        }
-    }, 
-    "a": {
-        "port": 8888,
-        "media": "/Users/danielearwicker/bitbucket/mirrorball/tests/a",
-        "peer": {
-            "host": "localhost",
-            "port": 8889,
-            "hour": 2,
-            "minute": 0,
-            "second": 0
-        }
-    },
-    "b": {
-        "port": 8889,
-        "media": "/Users/danielearwicker/bitbucket/mirrorball/tests/b",
-        "peer": {
-            "host": "localhost",
-            "port": 8888,
-            "hour": 2,
-            "minute": 0,
-            "second": 0
+            "host": 8888
         }
     }
-    
 }

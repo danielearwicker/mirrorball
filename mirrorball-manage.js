@@ -1,3 +1,5 @@
+var fs = require('fs');
+
 var libs = {
     'darwin': 'node-mac',
     'win32': 'node-windows',
@@ -6,13 +8,26 @@ var libs = {
 
 var Service = require(libs[process.platform]).Service;
 
+var port = 8888;
+
 module.exports = function(args, log) {
+
+    function sudo(action) {
+        try {
+            action();
+        } catch (x) {
+            log('Did you forget sudo?');
+        }
+    }
+
     var command = args[0];
 
     if (command !== 'start' && command != 'stop') {
         
-        log('Specify start or stop');
-        
+        log('Usage:');
+        log('    sudo mirrorball start <dir> <hostname>');
+        log('    sudo mirrorball stop');
+
     } else {
 
         var svc = new Service({
@@ -22,19 +37,36 @@ module.exports = function(args, log) {
         });
 
         if (command === 'start') {
-            svc.on('install', function(){
-                log("Installed successfully");
-                svc.start();
-            });
-    
-            svc.on('start', function(){
-                log("Started successfully");
-            });
 
-            try {
-                svc.install();                
-            } catch (x) {
-                console.log("Did you forget to run as administrator?")
+            if (args.length < 3) {
+                log('Specify <dir> <hostname>');
+            } else {
+
+                sudo(function() {
+                    fs.writeFileSync(
+                        __dirname + '/config.json', 
+                        JSON.stringify({
+                            'default': {
+                                port: port,
+                                media: args[1],
+                                peer: {
+                                    'host': port
+                                }
+                            }
+                        }, null, 4)
+                    );
+
+                    svc.on('install', function(){
+                        log("Installed successfully");
+                        svc.start();
+                    });
+
+                    svc.on('start', function(){
+                        log("Started successfully");
+                    });
+
+                    svc.install();
+                });
             }
 
         } else {
@@ -45,7 +77,10 @@ module.exports = function(args, log) {
                 svc.on('uninstall', function(){
                     log("Removed successfully");
                 });
-                svc.uninstall();
+                
+                sudo(function() {
+                    svc.uninstall();
+                });
             }
         }
     }    
