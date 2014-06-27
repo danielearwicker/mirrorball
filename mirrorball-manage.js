@@ -50,7 +50,8 @@ module.exports = function(args, log) {
                                 port: port,
                                 media: args[1],
                                 peer: {
-                                    'host': port
+                                    host: args[2],
+                                    port: port
                                 }
                             }
                         }, null, 4)
