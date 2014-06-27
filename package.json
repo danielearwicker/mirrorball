@@ -1,7 +1,7 @@
 {
   "name": "mirrorball",
-  "version": "0.0.0",
-  "description": "",
+  "version": "0.0.1",
+  "description": "Tool I use to backup a folder of very big files (e.g. ripped Blu-Rays)",
   "main": "mirrorball.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -13,7 +13,7 @@
     "type": "git",
     "url": "https://github.com/danielearwicker/mirrorball.git"
   },
-  "author": "",
+  "author": "Daniel Earwicker <dan@earwicker.com>",
   "license": "ISC",
   "dependencies": {
     "express": "^4.4.3",
