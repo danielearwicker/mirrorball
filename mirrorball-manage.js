@@ -1,4 +1,10 @@
-var Service = require('node-mac').Service;
+var libs = {
+    'darwin': 'node-mac',
+    'win32': 'node-windows',
+    'linux': 'node-linux'
+};
+
+var Service = require(libs[process.platform]).Service;
 
 module.exports = function(args, log) {
     var command = args[0];
@@ -25,8 +31,12 @@ module.exports = function(args, log) {
                 log("Started successfully");
             });
 
-            svc.install();
-    
+            try {
+                svc.install();                
+            } catch (x) {
+                console.log("Did you forget to run as administrator?")
+            }
+
         } else {
     
             if (!svc.exists) {

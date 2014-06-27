@@ -7,7 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "bin": {
-      "mirrorball": "./bin/mirrorball"
+    "mirrorball": "./bin/mirrorball"
   },
   "repository": {
     "type": "git",
@@ -17,6 +17,7 @@
   "license": "ISC",
   "dependencies": {
     "express": "^4.4.3",
+    "node-linux": "^0.1.2",
     "node-mac": "^0.1.3"
   }
 }
