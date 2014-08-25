@@ -181,7 +181,7 @@ function makeProgress(totalBytes) {
         for (var n = units + 1; n < barLength; n++) {
             progStr += "_";
         }
-        progStr += "] " + bps + "mbps";
+        progStr += "] " + bps + "mbps" + padding;
         process.stdout.write(progStr.substr(0, 50));
     };
 }
