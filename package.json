@@ -1,6 +1,6 @@
 {
   "name": "mirrorball",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Tool I use to backup a folder of very big files (e.g. ripped Blu-Rays)",
   "main": "mirrorball.js",
   "scripts": {
