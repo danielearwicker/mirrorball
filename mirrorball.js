@@ -1,545 +1,341 @@
-var fs = require("fs");
+var funkify = require("funkify");
+var fs = funkify(require("fs"));
 var path = require("path");
-var http = require("http");
-var url = require("url");
+var co = require("co");
+var crypto = require("crypto");
 
-var express = require("express");
+var maxSampleSize = 0x100000;
 
-var scan = require("./scan.js");
-var hash = require("./hash.js");
-var worker = require("./worker.js");
-
-var config = require("./config.json");
-
-var profileName = process.argv[2] || "default";
-
-if (profileName) {
-    config = config[profileName];
-    if (!config) {
-        throw new Error("Invalid profile name: " + profileName);
+function *hash(filePath, fileStat) {
+    var sampleSize = Math.min(maxSampleSize, fileStat.size);
+    if (sampleSize === 0) {
+        return '';
     }
-}
-
-if (!config.media) {
-    throw new Error("Must specify media");
-}
-if (!config.peer) {
-    throw new Error("Must specify peer");
-}
-
-var mediaPath = config.media;
-if (mediaPath[mediaPath.length - 1] != path.sep) {
-    mediaPath += path.sep;
-}
-
-function makePathTo(fileOrDir) {
-    var dirName = path.dirname(fileOrDir);
+    var fileHandle = yield fs.open(filePath, "r");
     try {
-        if (fs.statSync(dirName).isDirectory()) {
-            return;
+        var sampleBuffer = new Buffer(sampleSize);
+        yield fs.read(fileHandle, sampleBuffer, 0, sampleSize, fileStat.size - sampleSize);
+                
+        var hash = crypto.createHash("sha512");
+        hash.update(sampleBuffer);
+
+        if (fileStat.size > sampleSize * 2) {
+            yield fs.read(fileHandle, sampleBuffer, 0, sampleSize, 0);
+            hash.update(sampleBuffer);
         }
-    } catch (x) {
-        makePathTo(dirName);
-        fs.mkdirSync(dirName);
+
+        return hash.digest("base64");
+
+    } finally {
+        yield fs.close(fileHandle);
     }
 };
 
-function removeEmptyFolders(folder) {
+function *makePathTo(fileOrDir) {
+    var dirName = path.dirname(fileOrDir);
     try {
-        if (fs.readdirSync(folder).length) {
+        yield fs.stat(dirName);
+    } catch (x) {
+        yield *makePathTo(dirName);
+        console.log("Creating folder: " + dirName);
+        yield fs.mkdir(dirName);
+    }
+};
+
+function *removeEmptyFolders(folder) {
+    try {
+        if (yield fs.readdir(folder).length) {
             return;
         }
-        fs.rmdirSync(folder);
-        removeEmptyFolders(path.dirname(folder));
-    } catch (x) {}  
+        console.log("Removing empty folder: " + folder);
+        yield fs.rmdir(folder);
+        yield *removeEmptyFolders(path.dirname(folder));
+    } catch (x) {}
 }
 
-function aspect(obj, wrap, key, parent) {    
-    if (typeof obj === "function") {    
-        return function() {
-            var args = arguments;
-            return wrap(function() {
-                obj.apply(parent || null, args);
-            }, key);
-        }
-    }
-    var wrapped = {};
-    Object.keys(obj).forEach(function(key) {
-        wrapped[key] = aspect(obj[key], wrap, key, obj);        
-    });
-    return wrapped;
+function *deleteFile(filePath) {
+    console.log('Deleting file: ' + filePath);
+    yield fs.unlink(filePath);
+    yield removeEmptyFolders(path.dirname(filePath));
 }
+
+function *renameFile(oldName, newName) {
+    yield *makePathTo(newName);
+    yield fs.rename(oldName, newName);
+    yield *removeEmptyFolders(path.dirname(oldName));
+}
+
+function *scanFolder(p, each) {
+    try {
+        var s = yield fs.stat(p);
+        if (s.isDirectory()) {
+            var ar = yield fs.readdir(p);
+            for (var n = 0; n < ar.length; n++) {
+                var child = ar[n];
+                if (child[0] !== ".") {
+                    yield *scanFolder(path.join(p, child), each);
+                }
+            }
+        } else {
+            yield *each(p, s);
+        }
+    } catch(x) {
+        console.error(x);
+    }
+}
+
+var readInput = funkify(function() {    
+    var callback, listening;
+    return function(cb) {
+        process.stdin.resume();
+        process.stdin.setEncoding("utf8");
+        callback = cb;
+        if (!listening) {
+            process.stdin.on("data", function(text) {
+                process.stdin.pause();
+                callback(null, text.trim());
+            });
+            listening = true;
+        }
+    };
+}());
 
 var stateFileName = ".mirrorball";
-var stateFilePath = path.join(mediaPath, stateFileName);
-var localState;
 
-var events = {
-    next: 1, // events have a sequence number
-    pages: [[]], // array of arrays of events
-    clients: []
-}
+function *fetchState(folderPath) {
+    
+    console.log("Reading state of " + folderPath);
+    
+    var stateFilePath = path.join(folderPath, stateFileName),        
+        state = {}, byPath = {}, newState = {};
 
-function subscribe(adding, list) {
-    if (adding) {
-        events.clients.push(list);
-    } else {
-        for (var n = 0; n < events.clients.length; n++) {
-            if (events.clients[n] === list) {
-                events.clients.splice(n, 1);
-                return;
-            }
-        }
-    }
-}
+    try {
+        state = JSON.parse(yield fs.readFile(stateFilePath, { encoding: "utf8" }));
+    } catch (x) { }
 
-function collect(after, list) {
-    events.pages.forEach(function(page) {
-        if (page[page.length - 1].index > after) {
-            page.forEach(function (event) {
-                if (event.index > after) {
-                    list.push(event);
-                }
-            });
-        }
+    Object.keys(state).forEach(function (hash) {
+        var rec = Object.create(state[hash]);
+        rec.hash = hash;
+        byPath[rec.path] = rec;
     });
-}
 
-var maxLiveEvents = 100;
-var maxArchived = 100;
-
-function event(kind, message) {
-    var rest = Array.prototype.slice.call(arguments, 2);
-
-    var now = new Date();
-    console.log(now, kind, message, rest);
-    
-    var evt = {
-        index: events.next++,
-        time: now.getTime(),
-        kind: kind,
-        message: message,
-        rest: rest
-    };
-    
-    events.clients.forEach(function(client) {
-        client.push(evt);
-    });
-    
-    var lastPage = events.pages[events.pages.length - 1];
-    if (lastPage.length >= maxLiveEvents) {
-        lastPage = [];
-        while (events.pages.length > maxArchived) {
-            events.pages.shift();
-        }
-        events.pages.push(lastPage);
-    }
-    lastPage.push(evt);
-}
-
-function updateLocalState(callback) {
-
-    fs.readFile(stateFilePath, { encoding: "utf8" }, function(err, stateJson) {
-        var state = {};
-        if (!err) {
-            try {
-                state = JSON.parse(stateJson);
-            } catch (x) {
-                event("warn", "Starting with empty state", x.message);
+    yield *scanFolder(folderPath, function *(filePath, fileStat) {
+        var fileSuffix = filePath.substr(folderPath.length),
+            rec = byPath[fileSuffix],
+            fileTime = fileStat.mtime.getTime();
+        if (!rec || (fileTime != rec.time)) {
+            console.log('Computing hash for: ' + filePath);
+            var fileHash = yield *hash(filePath, fileStat);
+            var clash = newState[fileHash];
+            if (clash) {
+                console.log("Identical hashes: '" + fileSuffix + "' and '" + clash.path + "'");
+            } else {
+                newState[fileHash] = {
+                    path: fileSuffix,
+                    time: fileTime,
+                    size: fileStat.size
+                };
             }
         } else {
-            event("warn", "Starting with empty state", err.message);
+            newState[rec.hash] = {
+                path: fileSuffix,
+                time: rec.time,
+                size: fileStat.size
+            };
         }
-
-        var byPath = {}, newState = {};
-
-        Object.keys(state).forEach(function(hash) {
-            var rec = Object.create(state[hash]);
-            rec.hash = hash;
-            byPath[rec.path] = rec;
-        });
-
-        var hashes = worker({
-            each: function(file, next) {
-                var knownByHash = state[file.hash];
-                var touch = false;
-                if (knownByHash) {
-                    if (file.path !== knownByHash.path) {
-                        if (!knownByHash.path) {
-                            var ft = file.stat.mtime.getTime();
-                            if (file.stat.mtime.getTime() <= knownByHash.time) {
-                                touch = true;
-                            }
-                            event("local", "Resurrected", file.path);
-                        } else {
-                            event("local", "Moved", knownByHash.path, file.path);
-                            touch = true;
-                        }
-                    }
-                } else {
-                    event("local", "Added", file.path);
-                }
-                
-                var duplicate = newState[file.hash];
-                if (duplicate) {
-                    event("warn", "Duplicates", duplicate.path, file.path);
-                } else {
-                    
-                    var time = file.stat.mtime.getTime();
-                    if (touch) {
-                        time = new Date();
-                        time.setMilliseconds(0);
-                        fs.utimesSync(path.join(mediaPath, file.path), time, time);
-                    }
-                    
-                    newState[file.hash] = {
-                        path: file.path,
-                        size: file.stat.size,
-                        time: time
-                    };
-                }
-                next();
-            },
-            end: function() {
-                
-                Object.keys(state).forEach(function(hash) {
-                    var oldRecord = state[hash];
-                    if (!oldRecord.path) {                          
-                        var newRecord = newState[hash];
-                        if (!newRecord || newRecord.time <= oldRecord.time) {
-                            newState[hash] = oldRecord;
-                        }
-                    }
-                    if (!newState[hash]) {
-                        if (oldRecord.path) {
-                            event("local", "Deleted", oldRecord.path);
-                            newState[hash] = {
-                                path: null,
-                                time: new Date().getTime()
-                            };
-                        }
-                    }
-                });
-                
-                fs.writeFile(stateFilePath, JSON.stringify(newState, null, 4), function(err) {
-                    if (err) {
-                        event("error", err.message);                           
-                    } else {
-                        localState = newState;                          
-                    }
-                    callback();
-                });                   
-            }
-        });
-
-        var ageLimit = new Date();
-        ageLimit.setSeconds(ageLimit.getSeconds() - 300);
-        ageLimit = ageLimit.getTime();
-
-        scan(mediaPath, worker({
-            directory: function(dir, next) {
-                next();
-            },
-            each: function(file, next) {
-                if (file.path === stateFilePath) {
-                    next();
-                    return;
-                }
-
-                var relPath = file.path.substr(mediaPath.length), 
-                    knownByPath = byPath[relPath], 
-                    exisingHash = (knownByPath && knownByPath.time === file.stat.mtime.getTime() && 
-                                  knownByPath.size === file.stat.size) && knownByPath.hash;
-
-                if (exisingHash) {
-                    hashes({
-                        path: relPath,
-                        stat: file.stat,
-                        hash: exisingHash
-                    });
-                    next();
-                } else {
-                    if (file.stat.mtime > ageLimit) {
-                        event("local", "File is too new", relPath);
-                        next();
-                    } else {                    
-                        hash(file.path, file.stat, function(err, newHash) {
-                            if (err) {
-                                event("error", err.message, file.path);
-                            } else {
-                                hashes({
-                                    path: relPath,
-                                    stat: file.stat,
-                                    hash: newHash
-                                });
-                            }
-                            next();
-                        });
-                    }
-                }   
-            },
-            end: function(ignored, next) {
-                hashes("end", null);
-                next();
-            }
-        }));
     });
+    
+    yield fs.writeFile(stateFilePath, JSON.stringify(newState));
+    return newState;
 }
 
-function getRemoteState(callback) {
-    http.get(url.format({
-        protocol: "http",
-        hostname: config.peer.host,
-        port: config.peer.port,
-        pathname: "meta/state"
-    }), function(res) {
-        var chunks = [];
-        res.on("data", function(data) {
-            chunks.push(data);
-        });
-        res.on("end", function() {
-            callback(null, JSON.parse(Buffer.concat(chunks).toString()));
-        });
-        res.on("error", function(e) {
-            callback(e, null);
-        });
-    }).on("error", function(e) {
-        callback(e, null);
-    });
-}
-
-function download(file) {
-    activity("download", file.remote);
-    event("download", file.remote.path, "Queued", 0);
-    event("remote", "Scheduled download", file.remote.path);
-}
-
-var busy = false, currentMode;
-
-function logModes(obj) {
-    return aspect(obj, function(invoke, name) {
-        if (currentMode !== name) {
-            currentMode = name;
-            event("mode", name);
-        }   
-        invoke();
-    });
-}
-
-var activity = worker(logModes({
-    idle: function() {
-        busy = false;
-    },
-    compare: function(ignored, next) {
-        getRemoteState(function(err, remoteState) {
-            if (err) {
-                event("error", "Failed to get remote state", err.message);
-                next();
-            } else {
-                updateLocalState(function() {
-                    Object.keys(remoteState).forEach(function(hash) {   
-                        activity({
-                            local: localState[hash],
-                            remote: remoteState[hash]
-                        });
-                    });
-                    next();
-                });
-            }
-        });
-    },
-    each: function(file, next) {
-        if (!file.local) {
-            if (file.remote.path) {
-                download(file);
-            }
-        } else if ((file.remote.path !== file.local.path) && 
-                   (file.remote.time > file.local.time)) {
-            if (!file.remote.path) {
-                event("deletable", file.local.path, true);
-            } else if (file.local.path) {                   
-                activity("move", { from: file.local.path, to: file.remote.path });                  
-            } else {
-                download(file);
-            }
-        }
-        next();
-    },
-    move: function(files, next) {
-        try {
-            event("remote", "Moved", files.from, files.to);
-
-            var oldPath = path.join(mediaPath, files.from);
-            var newPath = path.join(mediaPath, files.to);
-
-            event("deletable", files.to, false);
-
-            makePathTo(newPath);
-            fs.renameSync(oldPath, newPath);
-            removeEmptyFolders(path.dirname(oldPath));
-            
-            next();
-
-        } catch(x) {
-            event("error", x.message);
-        }
-    },
-    download: function(file, next) {
-        var got = 0, lastLog = 0, seconds;
-        var started = new Date().getTime();
-        var log = function() {
-            var percent = (Math.floor((got/file.size)*10000)/100) + "%";
-            var info = percent + " " + (Math.floor((got/seconds)/1024)) + "KB/s";
-            event("download", file.path, info, percent);
-        };
+function makeProgress(totalBytes) {
+    var started = new Date().getTime(),
+        totalProgress = 0, 
+        barLength = 20,
+        padding = "                              ",
+        updated = started;
         
-        var fullPath = path.join(mediaPath, file.path);
-        event("deletable", file.path, false);
-
-        http.get(url.format({
-            protocol: "http",
-            hostname: config.peer.host,
-            port: config.peer.port,
-            pathname: "media/" + file.path
-        }), function(response) {
-            response.on("data", function(data) {
-                got += data.length;
-                seconds = (new Date().getTime() - started) / 1000;
-                var nextLog = Math.floor(seconds);
-                if (nextLog != lastLog) {
-                    lastLog = nextLog;
-                    log();
-                }
-            });
-            
-            makePathTo(fullPath);
-            response.pipe(fs.createWriteStream(fullPath)).on("finish", function() {
-                log();
-                event("download", file.path, null);
-                event("remote", "Download succeeded", file.path);
-                var time = new Date(file.time);
-                fs.utimesSync(fullPath, time, time);
-                next();
-            });
-            response.on("error", function(err) {
-                event("error", "Will retry download", file.path, err.message);
-                activity("download", file);
-                next();
-            });
-        }).on("error", function(err) {
-            event("error", "Will retry download", file.path, err.message);
-            activity("download", file);
-            next();
-        });
-    }
-}));
-
-function matchSchedule(value, pattern) {
-    pattern = pattern.trim().split("/").map(function(s) { return s.trim(); });
-    
-    if (pattern.length === 1) {
-        return pattern[0] === "*" || pattern[0] == value;
-    }
-
-    if (pattern.length === 2) {
-        var divisor = parseInt(pattern[1]);
-        return (value / divisor) % 1 === 0;
-    }
-    
-    return false;
-}
-
-function compare() {
-    if (busy) {
-        event("warning", "Still busy, not starting next comparison");
-    } else {
-        busy = true;        
-        activity("compare", null);  
-    }
-}
-    
-/*
-var scheduleTime = new Date();
-
-function checkSchedule() {
-        
-    var now = new Date();
-    now.setMilliseconds(0);
-
-    while (scheduleTime < now) {
-        scheduleTime.setSeconds(scheduleTime.getSeconds() + 1);
-        
-        if (matchSchedule(scheduleTime.getHours(), config.peer.hour) && 
-            matchSchedule(scheduleTime.getMinutes(), config.peer.minute) && 
-            matchSchedule(scheduleTime.getSeconds(), config.peer.second)) {
-
-            scheduleTime = now;
-
-            compare();
-            break;
-        }
-    }
-
-    setTimeout(checkSchedule, 1000);
-}
-*/
-
-event("info", "Reading local state");
-updateLocalState(function() {
-    event("local", "Ready");
-    event("mode", "idle");
-});
-
-var app = express();
-
-app.use("/media", express.static(config.media));
-app.use(express.static(__dirname + "/static"));
-
-app.post("/meta/compare", function(req, res) {
-    compare();
-    res.send({});
-});
-
-app.post("/meta/delete/*", function(req, res) {
-    var fullPath = path.join(mediaPath, req.params[0]);
-    fs.unlink(fullPath, function(err) {
-        if (err) {
-            event("error", "Could not delete file", fullPath, err.message);
-            res.send(500, "Could not delete file " + fullPath + " - " + err.message);
-        } else {
-            event("deletable", req.params[0], false);
-            event("user", "Deleted file", fullPath);
-            removeEmptyFolders(path.dirname(fullPath));
-            res.send({});
-        }
-    });
-});
-
-app.get("/meta/state", function(req, res) {
-    if (!localState) {
-        res.send(500, "Please wait, scanning media");
-    } else {
-        res.send(localState);
-    }
-});
-
-app.get("/meta/events/:after", function(req, res) {
-    
-    var list = [], count = 0;
-    subscribe(true, list);
-    collect(req.params.after, list);
-
-    var poll = function() {
-        if ((list.length !== 0) || (count >= 10)) {
-            subscribe(false, list);
-            res.send(list);
+    return function(progressBytes) {
+        if (progressBytes === null) {
+            process.stdout.write(padding + padding + "\r");
             return;
         }
-        count++;
-        setTimeout(poll, 500);
-    };
-    poll();
-});
+        
+        totalProgress += progressBytes;
 
-app.listen(config.port);
-console.log("Listening on port " + config.port);
+        var now = new Date().getTime();
+        if ((updated + 1000) > now) {
+            return;
+        }
+        updated = now;
+
+        var elapsed = (now - started) / 1000;
+        var bps = Math.round(((totalProgress/1000000) * 800) / elapsed) / 100;
+        var units = Math.round(barLength * totalProgress / totalBytes);
+        var progStr = "\r[";
+        for (var n = 0; n < units; n++) {
+            progStr += "*";
+        }
+        progStr += "|";
+        for (var n = units + 1; n < barLength; n++) {
+            progStr += "_";
+        }
+        progStr += "] " + bps + "mbps";
+        process.stdout.write(progStr.substr(0, 50));
+    };
+}
+
+function *copyFile(fromPath, toPath) {
+    
+    console.log("Copying from '" + fromPath + "' to '" + toPath);
+    yield *makePathTo(toPath);
+    
+    var fileSize = (yield fs.stat(fromPath)).size,
+        bufferSize = Math.min(0x10000, fileSize), 
+        buffer = new Buffer(bufferSize), 
+        progress = makeProgress(fileSize);
+        h = [ fs.open(fromPath, "r"), 
+              fs.open(toPath, "w") ];
+    try {
+        h = yield h;
+        for (;;) {
+            var got = (yield fs.read(h[0], buffer, 0, bufferSize, null))[0];
+            if (got <= 0) break;
+            yield fs.write(h[1], buffer, 0, got, null);
+            progress(got);
+        }
+        progress(null);
+    } finally {
+        yield h.map(function(handle) { 
+            fs.close(handle);
+        });
+    }
+}
+
+function formatFileSize(size) {
+    var units = ['bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    var unit = 0;
+    while (size > 1024) {
+        unit++;
+        size /= 1024;
+    }
+    return (Math.round(size * 100) / 100) + " " + units[unit];
+}
+
+function *pickOne(prompt, options) {
+    
+    options.forEach(function (option, i) {
+        console.log("[" + (i + 1) + "] " + option.caption);
+    });
+
+    for(;;) {    
+        console.log(prompt);
+        var o = options[parseInt(yield readInput(), 10) - 1];
+        if (o) {
+            return o.value;
+        }
+    }
+}
+
+function *mirror(folderPaths) {
+    
+    var states = yield folderPaths.map(fetchState), extras = [];
+
+    for (var hash in states[0]) {
+        var first = states[0][hash], second = states[1][hash];
+        if (!second) {
+            extras.push({
+                from: folderPaths[0],
+                to: folderPaths[1],
+                path: first.path,
+                size: first.size
+            });
+        } else if (first.path != second.path) {
+            console.log("Same file, different paths:");
+            var choice = yield *pickOne("Which name is correct?", [ {
+                caption: first.path,
+                value: function *() {
+                    yield *renameFile(folderPaths[1] + second.path, folderPaths[1] + first.path);
+                }
+            }, {
+                caption: second.path,
+                value: function *() {
+                    yield *renameFile(folderPaths[0] + first.path, folderPaths[0] + second.path);
+                }
+            } ]);
+            yield *choice();
+        }
+    }
+
+    for (var hash in states[1]) {
+        var first = states[0][hash], second = states[1][hash];
+        if (!first) {
+            extras.push({
+                from: folderPaths[1],
+                to: folderPaths[0],
+                path: second.path,
+                size: second.size
+            });
+        }
+    }
+
+    if (extras.length === 0) {
+        console.log("All good.");
+        return;
+    }
+
+    var byPath = {};
+    for (var c = 0; c < extras.length; c++) {
+        var extra = extras[c], clash = byPath[extra.path];
+        if (clash) {
+            console.log("Same path, different contents: " + extra.path);
+            var choice = yield *pickOne("Which one should be marked for deletion?", [ {
+                caption: clash.from + " - size: " + formatFileSize(clash.size),
+                value: clash
+            }, {
+                caption: extra.from + " - size: " + formatFileSize(extra.size),
+                value: extra
+            } ]);
+            choice.kill = true;                     
+        } else {
+            byPath[extra.path] = extra;
+        }
+    }
+
+    for (;;) {
+        console.log("Extra files:");
+        extras.forEach(function(extra, i) {            
+            console.log(i + ". " + (extra.kill ? "[DELETING] " : "") + extra.from + extra.path);
+        });
+        console.log("Enter file number(s) to toggle deletion, or S to start:");
+        
+        var i = yield readInput();    
+        if (i.toLowerCase() === 's') {
+            break;
+        }
+        i.split(' ').forEach(function(number) {
+            var extra = extras[number];
+            if (extra) {
+                extra.kill = !extra.kill;
+            }    
+        });
+    }
+    
+    for (var c = 0; c < extras.length; c++) {
+        var extra = extras[c];
+        if (extra.kill) {
+            yield *deleteFile(extra.from + extra.path);
+        } else {
+            yield *copyFile(extra.from + extra.path, extra.to + extra.path);
+        }
+    }
+}
+
+if (process.argv.length != 4) {
+    console.log('Specify two folder paths to compare');
+} else {
+    co(mirror(process.argv.slice(2).map(function(path) {
+        return path[path.length - 1] !== '/' ? path + '/' : path;
+    })))();
+}

@@ -1,9 +1,0 @@
-{
-    "default": {
-        "port": 8888,
-        "media": "wingwang",
-        "peer": {
-            "host": 8888
-        }
-    }
-}

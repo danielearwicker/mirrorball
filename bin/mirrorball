@@ -1,8 +1,0 @@
-#!/usr/bin/env node
-
-require('../mirrorball-manage.js')(
-    process.argv.slice(2), 
-    function(msg) {
-        console.log(msg);
-    }
-);
