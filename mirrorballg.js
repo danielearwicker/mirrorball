@@ -1,28 +1,30 @@
-(function(
-  // Reliable reference to the global object (i.e. window in browsers).
-  global,
+/**
+ * Copyright (c) 2014, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * https://raw.github.com/facebook/regenerator/master/LICENSE file. An
+ * additional grant of patent rights can be found in the PATENTS file in
+ * the same directory.
+ */
 
-  // Dummy constructor that we use as the .constructor property for
-  // functions that return Generator objects.
-  GeneratorFunction,
-
-  // Undefined value, more compressible than void 0.
-  undefined
-) {
+!(function() {
   var hasOwn = Object.prototype.hasOwnProperty;
+  var undefined; // More compressible than void 0.
+  var iteratorSymbol =
+    typeof Symbol === "function" && Symbol.iterator || "@@iterator";
 
-  if (global.wrapGenerator) {
+  if (typeof regeneratorRuntime === "object") {
     return;
   }
 
-  function wrapGenerator(innerFn, outerFn, self, tryList) {
+  var runtime = regeneratorRuntime =
+    typeof exports === "undefined" ? {} : exports;
+
+  function wrap(innerFn, outerFn, self, tryList) {
     return new Generator(innerFn, outerFn, self || null, tryList || []);
   }
-
-  global.wrapGenerator = wrapGenerator;
-  if (typeof exports !== "undefined") {
-    exports.wrapGenerator = wrapGenerator;
-  }
+  runtime.wrap = wrap;
 
   var GenStateSuspendedStart = "suspendedStart";
   var GenStateSuspendedYield = "suspendedYield";
@@ -33,26 +35,57 @@
   // breaking out of the dispatch switch statement.
   var ContinueSentinel = {};
 
-  var Gp = Generator.prototype;
-  var GFp = GeneratorFunction.prototype = Object.create(Function.prototype);
-  GFp.constructor = GeneratorFunction;
-  GFp.prototype = Gp;
-  Gp.constructor = GFp;
+  // Dummy constructor functions that we use as the .constructor and
+  // .constructor.prototype properties for functions that return Generator
+  // objects. For full spec compliance, you may wish to configure your
+  // minifier not to mangle the names of these two functions.
+  function GeneratorFunction() {}
+  function GeneratorFunctionPrototype() {}
 
-  wrapGenerator.mark = function(genFun) {
-    genFun.__proto__ = GFp;
+  var Gp = GeneratorFunctionPrototype.prototype = Generator.prototype;
+  GeneratorFunction.prototype = Gp.constructor = GeneratorFunctionPrototype;
+  GeneratorFunctionPrototype.constructor = GeneratorFunction;
+  GeneratorFunction.displayName = "GeneratorFunction";
+
+  runtime.isGeneratorFunction = function(genFun) {
+    var ctor = typeof genFun === "function" && genFun.constructor;
+    return ctor
+      ? ctor === GeneratorFunction ||
+        // For the native GeneratorFunction constructor, the best we can
+        // do is to check its .name property.
+        (ctor.displayName || ctor.name) === "GeneratorFunction"
+      : false;
+  };
+
+  runtime.mark = function(genFun) {
+    genFun.__proto__ = GeneratorFunctionPrototype;
     genFun.prototype = Object.create(Gp);
     return genFun;
   };
 
-  // Ensure isGeneratorFunction works when Function#name not supported.
-  if (GeneratorFunction.name !== "GeneratorFunction") {
-    GeneratorFunction.name = "GeneratorFunction";
-  }
+  runtime.async = function(innerFn, outerFn, self, tryList) {
+    return new Promise(function(resolve, reject) {
+      var generator = wrap(innerFn, outerFn, self, tryList);
+      var callNext = step.bind(generator.next);
+      var callThrow = step.bind(generator["throw"]);
 
-  wrapGenerator.isGeneratorFunction = function(genFun) {
-    var ctor = genFun && genFun.constructor;
-    return ctor ? GeneratorFunction.name === ctor.name : false;
+      function step(arg) {
+        try {
+          var info = this(arg);
+          var value = info.value;
+        } catch (error) {
+          return reject(error);
+        }
+
+        if (info.done) {
+          resolve(value);
+        } else {
+          Promise.resolve(value).then(callNext, callThrow);
+        }
+      }
+
+      callNext();
+    });
   };
 
   function Generator(innerFn, outerFn, self, tryList) {
@@ -66,7 +99,9 @@
       }
 
       if (state === GenStateCompleted) {
-        throw new Error("Generator has already finished");
+        // Be forgiving, per 25.3.3.3.3 of the spec:
+        // https://people.mozilla.org/~jorendorff/es6-draft.html#sec-generatorresume
+        return doneResult();
       }
 
       while (true) {
@@ -130,6 +165,9 @@
             method = "next";
             arg = undefined;
           }
+
+        } else if (method === "return") {
+          context.abrupt("return", arg);
         }
 
         state = GenStateExecuting;
@@ -171,14 +209,13 @@
     }
 
     generator.next = invoke.bind(generator, "next");
-    generator.throw = invoke.bind(generator, "throw");
+    generator["throw"] = invoke.bind(generator, "throw");
+    generator["return"] = invoke.bind(generator, "return");
 
     return generator;
   }
 
-  Gp[typeof Symbol === "function"
-     && Symbol.iterator
-     || "@@iterator"] = function() {
+  Gp[iteratorSymbol] = function() {
     return this;
   };
 
@@ -216,7 +253,7 @@
     this.reset();
   }
 
-  wrapGenerator.keys = function(object) {
+  runtime.keys = function(object) {
     var keys = [];
     for (var key in object) {
       keys.push(key);
@@ -244,28 +281,46 @@
   };
 
   function values(iterable) {
-    var iterator = iterable;
-    var Symbol = global.Symbol;
-    if (Symbol && Symbol.iterator in iterable) {
-      iterator = iterable[Symbol.iterator]();
-    } else if (!isNaN(iterable.length)) {
-      var i = -1;
-      iterator = function next() {
-        while (++i < iterable.length) {
-          if (i in iterable) {
-            next.value = iterable[i];
-            next.done = false;
-            return next;
+    if (iterable) {
+      var iteratorMethod = iterable[iteratorSymbol];
+      if (iteratorMethod) {
+        return iteratorMethod.call(iterable);
+      }
+
+      if (typeof iterable.next === "function") {
+        return iterable;
+      }
+
+      if (!isNaN(iterable.length)) {
+        var i = -1;
+
+        function next() {
+          while (++i < iterable.length) {
+            if (hasOwn.call(iterable, i)) {
+              next.value = iterable[i];
+              next.done = false;
+              return next;
+            }
           }
-        };
-        next.done = true;
-        return next;
-      };
-      iterator.next = iterator;
+
+          next.value = undefined;
+          next.done = true;
+
+          return next;
+        }
+
+        return next.next = next;
+      }
     }
-    return iterator;
+
+    // Return an iterator with no values.
+    return { next: doneResult };
   }
-  wrapGenerator.values = values;
+  runtime.values = values;
+
+  function doneResult() {
+    return { value: undefined, done: true };
+  }
 
   Context.prototype = {
     constructor: Context,
@@ -357,8 +412,7 @@
         var entry = this.tryEntries[i];
         if (entry.tryLoc <= this.prev &&
             hasOwn.call(entry, "finallyLoc") && (
-              entry.finallyLoc === finallyLoc ||
-              this.prev < entry.finallyLoc)) {
+              (entry.finallyLoc === finallyLoc || this.prev < entry.finallyLoc))) {
           return entry;
         }
       }
@@ -429,12 +483,12 @@
       return ContinueSentinel;
     }
   };
-}).apply(this, Function("return [this, function GeneratorFunction(){}]")());
+})();
 
-var hash = wrapGenerator.mark(function hash(filePath, fileStat) {
+var hash = regeneratorRuntime.mark(function hash(filePath, fileStat) {
     var sampleSize, fileHandle, sampleBuffer, hash;
 
-    return wrapGenerator(function hash$(context$1$0) {
+    return regeneratorRuntime.wrap(function hash$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             sampleSize = Math.min(maxSampleSize, fileStat.size);
@@ -482,10 +536,10 @@ var hash = wrapGenerator.mark(function hash(filePath, fileStat) {
     }, hash, this, [[6,, 17]]);
 });
 
-var makePathTo = wrapGenerator.mark(function makePathTo(fileOrDir) {
+var makePathTo = regeneratorRuntime.mark(function makePathTo(fileOrDir) {
     var dirName;
 
-    return wrapGenerator(function makePathTo$(context$1$0) {
+    return regeneratorRuntime.wrap(function makePathTo$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             dirName = path.dirname(fileOrDir);
@@ -497,7 +551,7 @@ var makePathTo = wrapGenerator.mark(function makePathTo(fileOrDir) {
             break;
         case 6:
             context$1$0.prev = 6;
-            context$1$0.t0 = context$1$0.catch(1);
+            context$1$0.t0 = context$1$0["catch"](1);
             return context$1$0.delegateYield(makePathTo(dirName), "t1", 9);
         case 9:
             console.log("Creating folder: " + dirName);
@@ -510,8 +564,8 @@ var makePathTo = wrapGenerator.mark(function makePathTo(fileOrDir) {
     }, makePathTo, this, [[1, 6]]);
 });
 
-var removeEmptyFolders = wrapGenerator.mark(function removeEmptyFolders(folder) {
-    return wrapGenerator(function removeEmptyFolders$(context$1$0) {
+var removeEmptyFolders = regeneratorRuntime.mark(function removeEmptyFolders(folder) {
+    return regeneratorRuntime.wrap(function removeEmptyFolders$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             context$1$0.prev = 0;
@@ -535,7 +589,7 @@ var removeEmptyFolders = wrapGenerator.mark(function removeEmptyFolders(folder) 
             break;
         case 11:
             context$1$0.prev = 11;
-            context$1$0.t3 = context$1$0.catch(0);
+            context$1$0.t3 = context$1$0["catch"](0);
         case 13:
         case "end":
             return context$1$0.stop();
@@ -543,8 +597,8 @@ var removeEmptyFolders = wrapGenerator.mark(function removeEmptyFolders(folder) 
     }, removeEmptyFolders, this, [[0, 11]]);
 });
 
-var deleteFile = wrapGenerator.mark(function deleteFile(filePath) {
-    return wrapGenerator(function deleteFile$(context$1$0) {
+var deleteFile = regeneratorRuntime.mark(function deleteFile(filePath) {
+    return regeneratorRuntime.wrap(function deleteFile$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             console.log('Deleting file: ' + filePath);
@@ -560,8 +614,8 @@ var deleteFile = wrapGenerator.mark(function deleteFile(filePath) {
     }, deleteFile, this);
 });
 
-var renameFile = wrapGenerator.mark(function renameFile(oldName, newName) {
-    return wrapGenerator(function renameFile$(context$1$0) {
+var renameFile = regeneratorRuntime.mark(function renameFile(oldName, newName) {
+    return regeneratorRuntime.wrap(function renameFile$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             return context$1$0.delegateYield(makePathTo(newName), "t4", 1);
@@ -577,10 +631,10 @@ var renameFile = wrapGenerator.mark(function renameFile(oldName, newName) {
     }, renameFile, this);
 });
 
-var scanFolder = wrapGenerator.mark(function scanFolder(p, each) {
+var scanFolder = regeneratorRuntime.mark(function scanFolder(p, each) {
     var s, ar, n, child;
 
-    return wrapGenerator(function scanFolder$(context$1$0) {
+    return regeneratorRuntime.wrap(function scanFolder$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             context$1$0.prev = 0;
@@ -627,7 +681,7 @@ var scanFolder = wrapGenerator.mark(function scanFolder(p, each) {
             break;
         case 21:
             context$1$0.prev = 21;
-            context$1$0.t8 = context$1$0.catch(0);
+            context$1$0.t8 = context$1$0["catch"](0);
             console.error(context$1$0.t8);
         case 24:
         case "end":
@@ -636,10 +690,10 @@ var scanFolder = wrapGenerator.mark(function scanFolder(p, each) {
     }, scanFolder, this, [[0, 21]]);
 });
 
-var fetchState = wrapGenerator.mark(function fetchState(folderPath) {
+var fetchState = regeneratorRuntime.mark(function fetchState(folderPath) {
     var stateFilePath, state, byPath, newState;
 
-    return wrapGenerator(function fetchState$(context$1$0) {
+    return regeneratorRuntime.wrap(function fetchState$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             console.log("Reading state of " + folderPath);
@@ -655,7 +709,7 @@ var fetchState = wrapGenerator.mark(function fetchState(folderPath) {
             break;
         case 9:
             context$1$0.prev = 9;
-            context$1$0.t11 = context$1$0.catch(2);
+            context$1$0.t11 = context$1$0["catch"](2);
         case 11:
             Object.keys(state).forEach(function (hash) {
                 var rec = Object.create(state[hash]);
@@ -664,10 +718,10 @@ var fetchState = wrapGenerator.mark(function fetchState(folderPath) {
             });
 
             return context$1$0.delegateYield(
-                scanFolder(folderPath, wrapGenerator.mark(function callee$1$0(filePath, fileStat) {
+                scanFolder(folderPath, regeneratorRuntime.mark(function callee$1$0(filePath, fileStat) {
                     var fileSuffix, rec, fileTime, fileHash, clash;
 
-                    return wrapGenerator(function callee$1$0$(context$2$0) {
+                    return regeneratorRuntime.wrap(function callee$1$0$(context$2$0) {
                         while (1) switch (context$2$0.prev = context$2$0.next) {
                         case 0:
                             fileSuffix = filePath.substr(folderPath.length), rec = byPath[fileSuffix], fileTime = fileStat.mtime.getTime();
@@ -720,10 +774,10 @@ var fetchState = wrapGenerator.mark(function fetchState(folderPath) {
     }, fetchState, this, [[2, 9]]);
 });
 
-var copyFile = wrapGenerator.mark(function copyFile(fromPath, toPath) {
+var copyFile = regeneratorRuntime.mark(function copyFile(fromPath, toPath) {
     var fileSize, bufferSize, buffer, progress, got;
 
-    return wrapGenerator(function copyFile$(context$1$0) {
+    return regeneratorRuntime.wrap(function copyFile$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             console.log("Copying from '" + fromPath + "' to '" + toPath);
@@ -781,10 +835,10 @@ var copyFile = wrapGenerator.mark(function copyFile(fromPath, toPath) {
     }, copyFile, this, [[9,, 24]]);
 });
 
-var pickOne = wrapGenerator.mark(function pickOne(prompt, options) {
+var pickOne = regeneratorRuntime.mark(function pickOne(prompt, options) {
     var o;
 
-    return wrapGenerator(function pickOne$(context$1$0) {
+    return regeneratorRuntime.wrap(function pickOne$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             options.forEach(function (option, i) {
@@ -816,10 +870,10 @@ var pickOne = wrapGenerator.mark(function pickOne(prompt, options) {
     }, pickOne, this);
 });
 
-var mirror = wrapGenerator.mark(function mirror(folderPaths) {
+var mirror = regeneratorRuntime.mark(function mirror(folderPaths) {
     var states, extras, hash, first, second, choice, byPath, c, extra, clash, i;
 
-    return wrapGenerator(function mirror$(context$1$0) {
+    return regeneratorRuntime.wrap(function mirror$(context$1$0) {
         while (1) switch (context$1$0.prev = context$1$0.next) {
         case 0:
             context$1$0.next = 2;
@@ -827,7 +881,7 @@ var mirror = wrapGenerator.mark(function mirror(folderPaths) {
         case 2:
             states = context$1$0.sent;
             extras = [];
-            context$1$0.t19 = wrapGenerator.keys(states[0]);
+            context$1$0.t19 = regeneratorRuntime.keys(states[0]);
         case 5:
             if ((context$1$0.t20 = context$1$0.t19()).done) {
                 context$1$0.next = 19;
@@ -860,8 +914,8 @@ var mirror = wrapGenerator.mark(function mirror(folderPaths) {
 
             return context$1$0.delegateYield(pickOne("Which name is correct?", [ {
                 caption: first.path,
-                value: wrapGenerator.mark(function callee$1$0() {
-                    return wrapGenerator(function callee$1$0$(context$2$0) {
+                value: regeneratorRuntime.mark(function callee$1$0() {
+                    return regeneratorRuntime.wrap(function callee$1$0$(context$2$0) {
                         while (1) switch (context$2$0.prev = context$2$0.next) {
                         case 0:
                             return context$2$0.delegateYield(
@@ -877,8 +931,8 @@ var mirror = wrapGenerator.mark(function mirror(folderPaths) {
                 })
             }, {
                 caption: second.path,
-                value: wrapGenerator.mark(function callee$1$1() {
-                    return wrapGenerator(function callee$1$1$(context$2$0) {
+                value: regeneratorRuntime.mark(function callee$1$1() {
+                    return regeneratorRuntime.wrap(function callee$1$1$(context$2$0) {
                         while (1) switch (context$2$0.prev = context$2$0.next) {
                         case 0:
                             return context$2$0.delegateYield(
@@ -1093,5 +1147,12 @@ if (process.argv.length != 4) {
 } else {
     co(mirror(process.argv.slice(2).map(function(path) {
         return path[path.length - 1] !== '/' ? path + '/' : path;
-    })))();
+    })))(function(err) {
+        if (err) {
+            console.log(err);
+            if (err.stack) {
+                console.log(err.stack);
+            }
+        }
+    });
 }

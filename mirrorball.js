@@ -337,5 +337,12 @@ if (process.argv.length != 4) {
 } else {
     co(mirror(process.argv.slice(2).map(function(path) {
         return path[path.length - 1] !== '/' ? path + '/' : path;
-    })))();
+    })))(function(err) {
+        if (err) {
+            console.log(err);
+            if (err.stack) {
+                console.log(err.stack);
+            }
+        }
+    });
 }
