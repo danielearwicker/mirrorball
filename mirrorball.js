@@ -2,6 +2,7 @@ var funkify = require("funkify");
 var fs = funkify(require("fs"));
 var path = require("path");
 var co = require("co");
+var ay = require("ay");
 var crypto = require("crypto");
 
 var maxSampleSize = 0x100000;
@@ -207,8 +208,8 @@ function *copyFile(fromPath, toPath) {
         }
         progress(null);
     } finally {
-        yield h.map(function(handle) { 
-            fs.close(handle);
+        yield ay(h).forEach(function *(handle) { 
+            yield fs.close(handle);
         });
     }
 }
