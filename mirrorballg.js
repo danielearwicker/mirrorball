@@ -823,9 +823,18 @@ var copyFile = regeneratorRuntime.mark(function copyFile(fromPath, toPath) {
             context$1$0.prev = 24;
             context$1$0.next = 27;
 
-            return h.map(function(handle) { 
-                fs.close(handle);
-            });
+            return ay(h).forEach(regeneratorRuntime.mark(function callee$1$0(handle) {
+                return regeneratorRuntime.wrap(function callee$1$0$(context$2$0) {
+                    while (1) switch (context$2$0.prev = context$2$0.next) {
+                    case 0:
+                        context$2$0.next = 2;
+                        return fs.close(handle);
+                    case 2:
+                    case "end":
+                        return context$2$0.stop();
+                    }
+                }, callee$1$0, this);
+            }));
         case 27:
             context$1$0.finish(24);
         case 28:
@@ -1073,6 +1082,7 @@ var funkify = require("funkify");
 var fs = funkify(require("fs"));
 var path = require("path");
 var co = require("co");
+var ay = require("ay");
 var crypto = require("crypto");
 
 var maxSampleSize = 0x100000;
