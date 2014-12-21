@@ -1,13 +1,13 @@
 {
   "name": "mirrorball",
-  "version": "0.0.13",
+  "version": "0.0.16",
   "description": "Tool I use to backup a folder of very big files (e.g. ripped Blu-Rays)",
   "main": "mirrorball.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "bin": {
-    "mirrorball": "./bin/mirrorball.sh"
+    "mirrorball": "./bin/mirrorball.js"
   },
   "repository": {
     "type": "git",
@@ -16,11 +16,7 @@
   "author": "Daniel Earwicker <dan@earwicker.com>",
   "license": "ISC",
   "dependencies": {
-    "ay": "^0.1.1",
     "co": "^3.1.0",
     "funkify": "^0.1.1"
-  },
-  "engines": {
-    "node": ">=0.11.2"
   }
 }
