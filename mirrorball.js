@@ -207,6 +207,7 @@ function *scanFolder(p, each) {
         var s = yield fs.stat(p);
         if (s.isDirectory()) {
             var ar = yield fs.readdir(p);
+            console.log('Scanning directory:' + p);
             for (var n = 0; n < ar.length; n++) {
                 var child = ar[n];
                 if (child[0] !== ".") {
@@ -282,6 +283,7 @@ function *fetchState(folderPath) {
         }
     });
     
+    console.log('Saving updated state:' + stateFilePath);
     yield fs.writeFile(stateFilePath, JSON.stringify(newState));
     return newState;
 }
