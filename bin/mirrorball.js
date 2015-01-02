@@ -1,3 +1,5 @@
 #!/usr/bin/env node
 
-require('../mirrorballg.js')
+require("6to5/register")({ ignore: false });
+
+require('../mirrorball.js')

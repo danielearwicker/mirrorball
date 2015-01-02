@@ -2,142 +2,7 @@ var funkify = require("funkify");
 var fs = funkify(require("fs"));
 var path = require("path");
 var co = require("co");
-
-// var ay = require("ay");
-
-var ay = (function() {
-    
-    var co = require('co');
-
-    var prototype = {
-        map: function(gen, thisArg ) {
-            var self = this;
-            return ay(function*() {
-                var ar = yield self.generate(),
-                    len = ar.length >>> 0,
-                    result = new Array(len);
-                for (var i = 0; i < len; i++) {
-                    if (i in ar) {
-                        result[i] = yield gen.call(thisArg, ar[i], i, ar);
-                    }
-                }
-                return result;
-            });
-        },
-        filter: function(gen, thisArg) {
-            var self = this;
-            return ay(function*() {
-                var ar = yield self.generate(),
-                    len = ar.length >>> 0,
-                    result = [];
-                for (var i = 0; i < len; i++) {
-                    if (i in ar && (yield gen.call(thisArg, ar[i], i, ar))) {
-                        result.push(ar[i]);
-                    }
-                }
-                return result;
-            });
-        },
-        reduce: function(gen, init) {
-            var self = this;
-            return ay(function*() {
-                var ar = yield self.generate(), len = ar.length >>> 0, k = 0, value;
-                if (init !== undefined) {
-                    value = init;
-                } else {
-                    while (k < len && !(k in ar)) k++;
-                    if (k >= len) {
-                        throw new TypeError('Reduce of empty array with no initial value');
-                    }
-                    value = ar[k++];
-                }
-                for (; k < len; k++) {
-                    if (k in ar) {
-                        value = yield gen(value, ar[k], k, ar);
-                    }
-                }
-                return value;
-            });
-        },
-        reduceRight: function(gen, init) {
-            var self = this;
-            return ay(function*() {
-                var ar = yield self.generate(), len = ar.length >>> 0, k = len - 1, value;
-                if (init !== undefined) {
-                    value = init;
-                } else {
-                    while (k >= 0 && !(k in ar )) k--;
-                    if (k < 0) {
-                        throw new TypeError('Reduce of empty array with no initial value');
-                    }
-                    value = ar[k--];
-                }
-                for (; k >= 0; k--) {
-                    if (k in ar) {
-                        value = yield gen(value, ar[k], k, ar);
-                    }
-                }
-                return value;
-            });
-        },
-        every: function(gen, thisArg) {
-            var self = this;
-            return ay(function*() {
-                var ar = yield self.generate(), len = ar.length >>> 0;
-                for (var i = 0; i < len; i++) {
-                    if ((i in ar) && !(yield gen.call(thisArg, ar[i], i, ar))) {
-                        return false;
-                    }
-                }
-                return true;
-           });
-        },
-        some: function(gen, thisArg) {
-            var self = this;
-            return ay(function*() {
-                var ar = yield self.generate(), len = ar.length >>> 0;
-                for (var i = 0; i < len; i++) {
-                    if ((i in ar) && (yield gen.call(thisArg, ar[i], i, ar))) {
-                        return true;
-                    }
-                }
-                return false;
-            });
-        },
-        forEach: function(gen, thisArg) {
-            var self = this;
-            return ay(function*() {
-                var ar = yield self.generate(), len = ar.length >>> 0;
-                for (var i = 0; i < len; i++) {
-                    if (i in ar) {
-                        yield gen.call(thisArg, ar[i], i, ar);
-                    }
-                }
-            });
-        },
-        then: function(done, fail) {
-            co(this.generate())(function(err, val) {
-                if (err) {
-                    fail(err);
-                } else {
-                    done(val);
-                }
-            });
-        }
-    };
-
-    return function(g) {
-        if (typeof g !== 'function') {
-            g = g === void 0 ? [] : Array.isArray(g) ? g : [g];
-            return ay(function* () { return g; });
-        }
-        return Object.create(prototype, {
-            generate: { value: g }
-        });
-    };
-    
-})();
-
+var ay = require("ay");
 
 var crypto = require("crypto");
 
@@ -222,14 +87,14 @@ function *scanFolder(p, each) {
     }
 }
 
-var readInput = funkify(function() {    
+var readInput = funkify(() => {    
     var callback, listening;
-    return function(cb) {
+    return cb => {
         process.stdin.resume();
         process.stdin.setEncoding("utf8");
         callback = cb;
         if (!listening) {
-            process.stdin.on("data", function(text) {
+            process.stdin.on("data", text => {
                 process.stdin.pause();
                 callback(null, text.trim());
             });
@@ -251,7 +116,7 @@ function *fetchState(folderPath) {
         state = JSON.parse(yield fs.readFile(stateFilePath, { encoding: "utf8" }));
     } catch (x) { }
 
-    Object.keys(state).forEach(function (hash) {
+    Object.keys(state).forEach(hash => {
         var rec = Object.create(state[hash]);
         rec.hash = hash;
         byPath[rec.path] = rec;
@@ -295,7 +160,7 @@ function makeProgress(totalBytes) {
         padding = "                              ",
         updated = started;
         
-    return function(progressBytes) {
+    return progressBytes => {
         if (progressBytes === null) {
             process.stdout.write(padding + padding + "\r");
             return;
@@ -333,7 +198,7 @@ function *copyFile(fromPath, toPath) {
     var fileSize = (yield fs.stat(fromPath)).size,
         bufferSize = Math.min(0x10000, fileSize), 
         buffer = new Buffer(bufferSize), 
-        progress = makeProgress(fileSize);
+        progress = makeProgress(fileSize),
         h = [ fs.open(fromPath, "r"), 
               fs.open(toPath, "w") ];
     try {
@@ -364,9 +229,7 @@ function formatFileSize(size) {
 
 function *pickOne(prompt, options) {
     
-    options.forEach(function (option, i) {
-        console.log("[" + (i + 1) + "] " + option.caption);
-    });
+    options.forEach((option, i) => console.log("[" + (i + 1) + "] " + option.caption));
 
     for(;;) {    
         console.log(prompt);
@@ -444,20 +307,28 @@ function *mirror(folderPaths) {
 
     for (;;) {
         console.log("Extra files:");
-        extras.forEach(function(extra, i) {            
-            console.log(i + ". " + (extra.kill ? "[DELETING] " : "") + extra.from + extra.path);
-        });
+        extras.forEach((extra, i) =>            
+            console.log(i + ". " + (extra.kill ? "[DELETING] " : "") + extra.from + extra.path));
         console.log("Enter file number(s) to toggle deletion, or S to start:");
         
         var i = yield readInput();    
         if (i.toLowerCase() === 's') {
             break;
         }
-        i.split(' ').forEach(function(number) {
-            var extra = extras[number];
-            if (extra) {
-                extra.kill = !extra.kill;
-            }    
+        i.split(' ').forEach(number => {
+            var first, last, dash = number.indexOf('-');
+            if (dash !== -1) {
+                first = parseInt(number.substr(0, dash));
+                last = parseInt(number.substr(dash + 1));
+            } else {
+                first = last = parseInt(number);
+            }
+            for (var n = first; n <= last; n++) {            
+                var extra = extras[n];
+                if (extra) {
+                    extra.kill = !extra.kill;
+                }    
+            }
         });
     }
     
@@ -474,9 +345,9 @@ function *mirror(folderPaths) {
 if (process.argv.length != 4) {
     console.log('Specify two folder paths to compare');
 } else {
-    co(mirror(process.argv.slice(2).map(function(path) {
-        return path[path.length - 1] !== '/' ? path + '/' : path;
-    })))(function(err) {
+    co(mirror(process.argv.slice(2).map(path =>
+        path[path.length - 1] !== '/' ? path + '/' : path
+    )))(err => {
         if (err) {
             console.log(err);
             if (err.stack) {
