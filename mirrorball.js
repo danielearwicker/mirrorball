@@ -72,7 +72,6 @@ function *scanFolder(p, each) {
         var s = yield fs.stat(p);
         if (s.isDirectory()) {
             var ar = yield fs.readdir(p);
-            console.log('Scanning directory:' + p);
             for (var n = 0; n < ar.length; n++) {
                 var child = ar[n];
                 if (child[0] !== ".") {
@@ -105,7 +104,7 @@ var readInput = funkify(() => {
 
 var stateFileName = ".mirrorball";
 
-function *fetchState(folderPath) {
+function *fetchState(folderPath, progress) {
     
     console.log("Reading state of " + folderPath);
     
@@ -116,22 +115,29 @@ function *fetchState(folderPath) {
         state = JSON.parse(yield fs.readFile(stateFilePath, { encoding: "utf8" }));
     } catch (x) { }
 
-    Object.keys(state).forEach(hash => {
+    var previousHashes = Object.keys(state);
+    var previousCount = previousHashes.length;
+    previousHashes.forEach(hash => {
         var rec = Object.create(state[hash]);
         rec.hash = hash;
         byPath[rec.path] = rec;
     });
 
+    var index = 0;
     yield *scanFolder(folderPath, function *(filePath, fileStat) {
+
+        progress((index++)/previousCount);
+
         var fileSuffix = filePath.substr(folderPath.length),
             rec = byPath[fileSuffix],
             fileTime = fileStat.mtime.getTime();
         if (!rec || (fileTime != rec.time)) {
-            console.log('Computing hash for: ' + filePath);
+            // console.log('Computing hash for: ' + filePath);
             var fileHash = yield *hash(filePath, fileStat);
             var clash = newState[fileHash];
             if (clash) {
                 console.log("Identical hashes: '" + fileSuffix + "' and '" + clash.path + "'");
+                process.exit(1);
             } else {
                 newState[fileHash] = {
                     path: fileSuffix,
@@ -148,18 +154,51 @@ function *fetchState(folderPath) {
         }
     });
     
-    console.log('Saving updated state:' + stateFilePath);
+    //console.log('Saving updated state:' + stateFilePath);
     yield fs.writeFile(stateFilePath, JSON.stringify(newState));
     return newState;
 }
 
+function makeThrottle() {
+    var started = new Date().getTime(), updated = 0;
+    return {
+        elapsed() {
+            var now = new Date().getTime();
+            return (now - started) / 1000;
+        },
+        ready() {
+            var now = new Date().getTime();
+            if ((updated + 1000) > now) {
+                return false;
+            }
+            updated = now;
+            return true;            
+        }
+    };
+}
+
+function makeProgressBar(fraction) {
+    var barLength = 20;
+
+    var units = Math.round(barLength * fraction);
+    var progStr = "[";
+    for (var n = 0; n < units; n++) {
+        progStr += "*";
+    }
+    progStr += "|";
+    for (var n = units + 1; n < barLength; n++) {
+        progStr += "_";
+    }
+    progStr += "]";
+    return progStr;
+}
+
+var padding = "                              ";
+
 function makeProgress(totalBytes) {
-    var started = new Date().getTime(),
-        totalProgress = 0, 
-        barLength = 20,
-        padding = "                              ",
-        updated = started;
-        
+    var throttle = makeThrottle(), 
+        totalProgress = 0;
+
     return progressBytes => {
         if (progressBytes === null) {
             process.stdout.write(padding + padding + "\r");
@@ -167,26 +206,14 @@ function makeProgress(totalBytes) {
         }
         
         totalProgress += progressBytes;
-
-        var now = new Date().getTime();
-        if ((updated + 1000) > now) {
+        if (!throttle.ready()) {
             return;
         }
-        updated = now;
 
-        var elapsed = (now - started) / 1000;
+        var elapsed = throttle.elapsed();
         var bps = Math.round(((totalProgress/1000000) * 800) / elapsed) / 100;
-        var units = Math.round(barLength * totalProgress / totalBytes);
-        var progStr = "\r[";
-        for (var n = 0; n < units; n++) {
-            progStr += "*";
-        }
-        progStr += "|";
-        for (var n = units + 1; n < barLength; n++) {
-            progStr += "_";
-        }
-        progStr += "] " + bps + "mbps" + padding;
-        process.stdout.write(progStr.substr(0, 50));
+        var text = "\r" + makeProgressBar(totalProgress / totalBytes) + " " + bps + "mbps" + padding;
+        process.stdout.write(text.substr(0, 50));
     };
 }
 
@@ -240,9 +267,26 @@ function *pickOne(prompt, options) {
     }
 }
 
+function makeStateProgresses() {
+    var fractions = [0, 0], throttle = makeThrottle();
+    
+    function updateProgress() {
+        if (throttle.ready()) {
+            process.stdout.write("\r" + fractions.map(makeProgressBar).join(" "));
+        }
+    }
+
+    return [0, 1].map(index => fraction => {
+        fractions[index] = fraction;
+        updateProgress();
+    });
+}
+
 function *mirror(folderPaths) {
     
-    var states = yield folderPaths.map(fetchState), extras = [];
+    var progresses = makeStateProgresses();
+
+    var states = yield folderPaths.map((p, i) => fetchState(p, progresses[i])), extras = [];
 
     for (var hash in states[0]) {
         var first = states[0][hash], second = states[1][hash];
