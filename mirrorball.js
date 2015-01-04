@@ -178,14 +178,16 @@ function makeThrottle() {
 }
 
 function makeProgressBar(fraction) {
-    var barLength = 20;
+    var barLength = 35;
 
     var units = Math.round(barLength * fraction);
     var progStr = "[";
     for (var n = 0; n < units; n++) {
         progStr += "*";
     }
-    progStr += "|";
+    if (units < barLength) {
+        progStr += "|";
+    }
     for (var n = units + 1; n < barLength; n++) {
         progStr += "_";
     }
