@@ -2,35 +2,55 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
-var maxSampleSize = 0x100000;
+const maxSampleSize = 0x100000;
 
-function hash(filePath: string, fileStat: fs.Stats) {
-    var sampleSize = Math.min(maxSampleSize, fileStat.size);
+interface Callback<T> {
+    (err: Error, result: T): void;
+}
+
+function p<T>(impl: (c: Callback<T>) => void) {
+    return new Promise<T>((resolve, reject) => {
+        impl((err, result) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(result);
+            }
+        });
+    });
+}
+
+function read(fd: number, buffer: Buffer, offset: number, length: number, position: number) {
+    return p<number>(cb => fs.read(fd, buffer, offset, length, position, (e, g, b) => cb(e, g)));
+}
+
+async function hash(filePath: string, fileStat: fs.Stats) {
+    const sampleSize = Math.min(maxSampleSize, fileStat.size);
     if (sampleSize === 0) {
         return '';
     }
-    var fileHandle = fs.openSync(filePath, "r");
+    const fileHandle = fs.openSync(filePath, "r");
     try {
-        var sampleBuffer = new Buffer(sampleSize);
-        fs.readSync(fileHandle, sampleBuffer, 0, sampleSize, fileStat.size - sampleSize);
+        const sampleBuffer = new Buffer(sampleSize);
+        const got1 = await read(fileHandle, sampleBuffer, 0, sampleSize, fileStat.size - sampleSize);
 
-        var hash = crypto.createHash("sha512");
+        const hash = crypto.createHash("sha512");
         hash.update(sampleBuffer);
 
         if (fileStat.size > sampleSize * 2) {
-            fs.readSync(fileHandle, sampleBuffer, 0, sampleSize, 0);
+            const got2 = await read(fileHandle, sampleBuffer, 0, sampleSize, 0);
             hash.update(sampleBuffer);
         }
 
         return hash.digest("base64");
 
     } finally {
-        fs.closeSync(fileHandle);
+        await fs.close(fileHandle);
     }
 };
 
 function makePathTo(fileOrDir: string) {
-    var dirName = path.dirname(fileOrDir);
+    const dirName = path.dirname(fileOrDir);
     try {
         fs.statSync(dirName);
     } catch (x) {
@@ -63,19 +83,20 @@ function renameFile(oldName: string, newName: string) {
     removeEmptyFolders(path.dirname(oldName));
 }
 
-function scanFolder(p: string, each: (p: string, s: fs.Stats) => void) {
+async function scanFolder(p: string, each: (p: string, s: fs.Stats) => Promise<void>) {
     try {
-        var s = fs.statSync(p);
+        const s = fs.statSync(p);
         if (s.isDirectory()) {
-            var ar = fs.readdirSync(p);
-            for (var n = 0; n < ar.length; n++) {
-                var child = ar[n];
+            console.log(p);
+            
+            const ar = fs.readdirSync(p);
+            for (const child of ar) {
                 if (child[0] !== ".") {
-                    scanFolder(path.join(p, child), each);
+                    await scanFolder(path.join(p, child), each);
                 }
             }
         } else {
-            each(p, s);
+            await each(p, s);
         }
     } catch(x) {
         console.error(x);
@@ -97,7 +118,7 @@ function readInput() {
     });
 }
 
-var stateFileName = ".mirrorball";
+const stateFileName = ".mirrorball";
 
 interface FileState {
     path: string;
@@ -109,39 +130,37 @@ interface FileStateWithHash extends FileState {
     hash: string;
 }
 
-function fetchState(folderPath: string, progress: (val: number) => void) {
+async function fetchState(folderPath: string) {
 
     console.log("Reading state of " + folderPath);
 
-    var stateFilePath = path.join(folderPath, stateFileName),
-        state: { [hash: string]: FileStateWithHash } = {},
-        byPath: { [path: string]: FileStateWithHash } = {},
+    const stateFilePath = path.join(folderPath, stateFileName);
+
+    let state: { [hash: string]: FileStateWithHash } = {};
+
+    const byPath: { [path: string]: FileStateWithHash } = {},
         newState: { [hash: string]: FileState } = {};
 
     try {
         state = JSON.parse(fs.readFileSync(stateFilePath, { encoding: "utf8" }));
     } catch (x) { }
 
-    var previousHashes = Object.keys(state);
-    var previousCount = previousHashes.length;
+    const previousHashes = Object.keys(state);
+    const previousCount = previousHashes.length;
     previousHashes.forEach(hash => {
-        var rec = Object.create(state[hash]);
+        const rec = Object.create(state[hash]);
         rec.hash = hash;
         byPath[rec.path] = rec;
     });
 
-    var index = 0;
-    scanFolder(folderPath, function (filePath, fileStat) {
+    await scanFolder(folderPath, async (filePath, fileStat) => {
 
-        progress((index++)/previousCount);
-
-        var fileSuffix = filePath.substr(folderPath.length),
+        const fileSuffix = filePath.substr(folderPath.length),
             rec = byPath[fileSuffix],
             fileTime = fileStat.mtime.getTime();
         if (!rec || (fileTime != rec.time)) {
-            // console.log('Computing hash for: ' + filePath);
-            var fileHash = hash(filePath, fileStat);
-            var clash = newState[fileHash];
+            const fileHash = await hash(filePath, fileStat);
+            const clash = newState[fileHash];
             if (clash) {
                 console.log("Identical hashes: '" + fileSuffix + "' and '" + clash.path + "'");
                 process.exit(1);
@@ -162,19 +181,20 @@ function fetchState(folderPath: string, progress: (val: number) => void) {
     });
 
     //console.log('Saving updated state:' + stateFilePath);
-    fs.writeFileSync(stateFilePath, JSON.stringify(newState));
+    fs.writeFileSync(stateFilePath, JSON.stringify(newState, null, 2));
     return newState;
 }
 
 function makeThrottle() {
-    var started = new Date().getTime(), updated = 0;
+    const started = new Date().getTime();
+    let updated = 0;
     return {
         elapsed() {
-            var now = new Date().getTime();
+            const now = new Date().getTime();
             return (now - started) / 1000;
         },
         ready() {
-            var now = new Date().getTime();
+            const now = new Date().getTime();
             if ((updated + 1000) > now) {
                 return false;
             }
@@ -185,28 +205,29 @@ function makeThrottle() {
 }
 
 function makeProgressBar(fraction: number) {
-    var barLength = 35;
+    const barLength = 35;
 
-    var units = Math.round(barLength * fraction);
-    var progStr = "[";
-    for (var n = 0; n < units; n++) {
+    const units = Math.round(barLength * Math.min(1, Math.max(0, fraction)));
+
+    let progStr = "[";
+    for (let n = 0; n < units; n++) {
         progStr += "*";
     }
     if (units < barLength) {
         progStr += "|";
     }
-    for (var n = units + 1; n < barLength; n++) {
+    for (let n = units + 1; n < barLength; n++) {
         progStr += "_";
     }
     progStr += "]";
     return progStr;
 }
 
-var padding = "                              ";
+const padding = "                              ";
 
 function makeProgress(totalBytes: number) {
-    var throttle = makeThrottle(),
-        totalProgress = 0;
+    const throttle = makeThrottle();
+    let totalProgress = 0;
 
     return (progressBytes: number | null) => {
         if (progressBytes === null) {
@@ -219,9 +240,9 @@ function makeProgress(totalBytes: number) {
             return;
         }
 
-        var elapsed = throttle.elapsed();
-        var bps = Math.round(((totalProgress/1000000) * 800) / elapsed) / 100;
-        var text = "\r" + makeProgressBar(totalProgress / totalBytes) + " " + bps + "mbps" + padding;
+        const elapsed = throttle.elapsed();
+        const bps = Math.round(((totalProgress/1000000) * 800) / elapsed) / 100;
+        const text = "\r" + makeProgressBar(totalProgress / totalBytes) + " " + bps + "mbps" + padding;
         process.stdout.write(text.substr(0, 50));
     };
 }
@@ -231,7 +252,7 @@ function copyFile(fromPath: string, toPath: string) {
     console.log("Copying from '" + fromPath + "' to '" + toPath);
     makePathTo(toPath);
 
-    var fileSize = (fs.statSync(fromPath)).size,
+    const fileSize = (fs.statSync(fromPath)).size,
         bufferSize = Math.min(0x10000, fileSize),
         buffer = new Buffer(bufferSize),
         progress = makeProgress(fileSize),
@@ -240,7 +261,7 @@ function copyFile(fromPath: string, toPath: string) {
 
     try {
         for (;;) {
-            var got = fs.readSync(handleFrom, buffer, 0, bufferSize, null);
+            const got = fs.readSync(handleFrom, buffer, 0, bufferSize, null);
             if (got <= 0) break;
             fs.writeSync(handleTo, buffer, 0, got);
             progress(got);
@@ -253,8 +274,8 @@ function copyFile(fromPath: string, toPath: string) {
 }
 
 function formatFileSize(size: number) {
-    var units = ['bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    var unit = 0;
+    const units = ['bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let unit = 0;
     while (size > 1024) {
         unit++;
         size /= 1024;
@@ -272,9 +293,9 @@ async function pickOne<T>(prompt: string, options: Option<T>[]) {
     options.forEach((option, i) => console.log("[" + (i + 1) + "] " + option.caption));
 
     for (;;) {
-        var line = await readInput();
+        const line = await readInput();
 
-        var o = options[parseInt(line, 10) - 1];
+        const o = options[parseInt(line, 10) - 1];
         if (o) {
             return o.value;
         }
@@ -282,7 +303,7 @@ async function pickOne<T>(prompt: string, options: Option<T>[]) {
 }
 
 function makeStateProgresses() {
-    var fractions = [0, 0], throttle = makeThrottle();
+    const fractions = [0, 0], throttle = makeThrottle();
 
     function updateProgress() {
         if (throttle.ready()) {
@@ -302,12 +323,15 @@ interface Extra {
 
 async function mirror(folderPaths: string[]) {
 
-    var progresses = makeStateProgresses();
+    // var progresses = makeStateProgresses();
 
-    var states = folderPaths.map((p, i) => fetchState(p, progresses[i])), extras: Extra[] = [];
+    const states = await Promise.all(folderPaths.map((p, i) => fetchState(p))),
+        extras: Extra[] = [];
 
-    for (var hash in states[0]) {
-        var first = states[0][hash], second = states[1][hash];
+    const sameFileDifferentPaths: { first: FileState, second: FileState }[] = [];
+
+    for (const hash in states[0]) {
+        const first = states[0][hash], second = states[1][hash];
         if (!second) {
             extras.push({
                 from: folderPaths[0],
@@ -316,20 +340,12 @@ async function mirror(folderPaths: string[]) {
                 size: first.size
             });
         } else if (first.path != second.path) {
-            console.log("Same file, different paths:");
-            let choice = await pickOne("Which name is correct?", [ {
-                caption: first.path,
-                value: () => renameFile(folderPaths[1] + second.path, folderPaths[1] + first.path)
-            }, {
-                caption: second.path,
-                value: () => renameFile(folderPaths[0] + first.path, folderPaths[0] + second.path)
-            } ]);
-            choice();
+            sameFileDifferentPaths.push({ first, second });
         }
     }
 
-    for (var hash in states[1]) {
-        var first = states[0][hash], second = states[1][hash];
+    for (const hash in states[1]) {
+        const first = states[0][hash], second = states[1][hash];
         if (!first) {
             extras.push({
                 from: folderPaths[1],
@@ -340,17 +356,37 @@ async function mirror(folderPaths: string[]) {
         }
     }
 
-    if (extras.length === 0) {
+    if (extras.length === 0 && sameFileDifferentPaths.length === 0) {
         console.log("All good.");
         return;
     }
 
-    var byPath: { [path: string]: Extra } = {};
-    for (var c = 0; c < extras.length; c++) {
-        var extra = extras[c], clash = byPath[extra.path];
+    if (extras.length) {
+        console.log(`Same path, different contents: ${extras.length}`);
+    }
+
+    if (sameFileDifferentPaths.length) {
+        console.log(`Same file, different paths: ${sameFileDifferentPaths}`);
+    }
+
+    for (const pair of sameFileDifferentPaths) {
+        console.log("Same file, different paths:");
+        const choice = await pickOne("Which name is correct?", [ {
+            caption: pair.first.path,
+            value: () => renameFile(folderPaths[1] + pair.second.path, folderPaths[1] + pair.first.path)
+        }, {
+            caption: pair.second.path,
+            value: () => renameFile(folderPaths[0] + pair.first.path, folderPaths[0] + pair.second.path)
+        } ]);
+        choice();
+    }
+
+    const byPath: { [path: string]: Extra } = {};
+    for (const extra of extras) {
+        const clash = byPath[extra.path];
         if (clash) {
             console.log("Same path, different contents: " + extra.path);
-            let choice = await pickOne("Which one should be marked for deletion?", [ {
+            const choice = await pickOne("Which one should be marked for deletion?", [ {
                 caption: clash.from + " - size: " + formatFileSize(clash.size),
                 value: clash
             }, {
@@ -369,20 +405,21 @@ async function mirror(folderPaths: string[]) {
             console.log(i + ". " + (extra.kill ? "[DELETING] " : "") + extra.from + extra.path));
         console.log("Enter file number(s) to toggle deletion, or S to start:");
 
-        var i = await readInput();
+        const i = await readInput();
         if (i.toLowerCase() === 's') {
             break;
         }
         i.split(' ').forEach(number => {
-            var first: number, last: number, dash = number.indexOf('-');
+            let first: number, last: number;
+            const dash = number.indexOf('-');
             if (dash !== -1) {
                 first = parseInt(number.substr(0, dash));
                 last = parseInt(number.substr(dash + 1));
             } else {
                 first = last = parseInt(number);
             }
-            for (var n = first; n <= last; n++) {
-                var extra = extras[n];
+            for (let n = first; n <= last; n++) {
+                const extra = extras[n];
                 if (extra) {
                     extra.kill = !extra.kill;
                 }
@@ -390,8 +427,7 @@ async function mirror(folderPaths: string[]) {
         });
     }
 
-    for (var c = 0; c < extras.length; c++) {
-        var extra = extras[c];
+    for (const extra of extras) {
         if (extra.kill) {
             deleteFile(extra.from + extra.path);
         } else {
@@ -400,18 +436,28 @@ async function mirror(folderPaths: string[]) {
     }
 }
 
-if (process.argv.length != 4) {
-    console.log('Specify two folder paths to compare');
-} else {
+async function main(args: string[]) {
+    if (args.length != 2) {
+        console.log('Specify two folder paths to compare');
+    } else {
+        if (args[0] == "-s") {
+            console.log("Refreshing state only");
 
-    mirror(process.argv.slice(2).map(path =>
-        path[path.length - 1] !== '/' ? path + '/' : path
-    )).catch(err => {
-        if (err) {
-            console.log(err);
-            if (err.stack) {
-                console.log(err.stack);
-            }
+            await fetchState(args[1]);
+
+        } else {
+            await mirror(args.map(path =>
+                path[path.length - 1] !== '/' ? path + '/' : path
+            ));
         }
-    });
+    }
 }
+
+main(process.argv.slice(2)).catch(err => {
+    if (err) {
+        console.log(err);
+        if (err.stack) {
+            console.log(err.stack);
+        }
+    }
+});
