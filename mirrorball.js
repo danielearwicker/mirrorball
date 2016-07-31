@@ -110,7 +110,7 @@ function readInput() {
         function listener(text) {
             process.stdin.pause();
             process.stdin.removeListener("data", listener);
-            resolve(text);
+            resolve(text.trim());
         }
         process.stdin.resume();
         process.stdin.setEncoding("utf8");
@@ -342,7 +342,8 @@ function mirror(folderPaths) {
             extras.forEach((extra, i) => console.log(i + ". " + (extra.kill ? "[DELETING] " : "") + extra.from + extra.path));
             console.log("Enter file number(s) to toggle deletion, or S to start:");
             const i = yield readInput();
-            if (i.toLowerCase() === 's') {
+            console.log(`Input was ${i}`);
+            if (i.toLowerCase() === "s") {
                 break;
             }
             i.split(' ').forEach(number => {

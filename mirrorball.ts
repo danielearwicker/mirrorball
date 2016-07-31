@@ -88,7 +88,7 @@ async function scanFolder(p: string, each: (p: string, s: fs.Stats) => Promise<v
         const s = fs.statSync(p);
         if (s.isDirectory()) {
             console.log(p);
-            
+
             const ar = fs.readdirSync(p);
             for (const child of ar) {
                 if (child[0] !== ".") {
@@ -109,7 +109,7 @@ function readInput() {
         function listener(text: string) {
             process.stdin.pause();
             process.stdin.removeListener("data", listener);
-            resolve(text);
+            resolve(text.trim());
         }
 
         process.stdin.resume();
@@ -406,7 +406,9 @@ async function mirror(folderPaths: string[]) {
         console.log("Enter file number(s) to toggle deletion, or S to start:");
 
         const i = await readInput();
-        if (i.toLowerCase() === 's') {
+        console.log(`Input was ${i}`);
+
+        if (i.toLowerCase() === "s") {
             break;
         }
         i.split(' ').forEach(number => {
